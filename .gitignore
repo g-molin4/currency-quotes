@@ -1,0 +1,13 @@
+.env
+
+node_modules/
+.pnpm-store/
+dist/
+coverage/
+.turbo/
+*.tsbuildinfo
+apps/*/src/generated/
+
+*.log
+
+.DS_Store
