@@ -1,0 +1,246 @@
+name: currency-quotes
+
+services:
+  # =========================================================
+  # POSTGRESQL
+  # =========================================================
+  postgres:
+    image: postgres:17-alpine
+    container_name: currency-postgres
+
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+    restart: unless-stopped
+
+    networks:
+      - currency-network
+
+
+  # =========================================================
+  # REDIS
+  # =========================================================
+  redis:
+    image: redis:7-alpine
+    container_name: currency-redis
+
+    command: redis-server --appendonly yes
+
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+
+    volumes:
+      - redis_data:/data
+
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+    restart: unless-stopped
+
+    networks:
+      - currency-network
+
+
+  # =========================================================
+  # DATABASE MIGRATIONS
+  # =========================================================
+  migrate:
+    build:
+      context: .
+      dockerfile: docker/node/Dockerfile.runtime.dev
+
+    working_dir: /workspace
+
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+    command: pnpm --filter api prisma:migrate:deploy
+
+    networks:
+      - currency-network
+
+
+  # =========================================================
+  # API - NESTJS
+  # =========================================================
+  api:
+    build:
+      context: .
+      dockerfile: docker/node/Dockerfile.runtime.dev
+
+    container_name: currency-api
+
+    working_dir: /workspace
+
+    environment:
+      NODE_ENV: development
+      PORT: 3000
+      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:5173}
+      JWT_SECRET: ${JWT_SECRET:-local-development-only-change-me}
+
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+
+      TSC_WATCHFILE: DynamicPriorityPolling
+      TSC_WATCHDIRECTORY: RecursiveDirectoryUsingDynamicPriorityPolling
+
+    ports:
+      - "3000:3000"
+
+    volumes:
+      - ./apps/api/src:/workspace/apps/api/src
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+      redis:
+        condition: service_healthy
+
+      migrate:
+        condition: service_completed_successfully
+
+    command: sh -c "pnpm --filter api prisma:generate && pnpm --filter api start:dev"
+
+    networks:
+      - currency-network
+  # =========================================================
+  # WORKER - NESTJS
+  # =========================================================
+  worker:
+    build:
+      context: .
+      dockerfile: docker/node/Dockerfile.runtime.dev
+
+    container_name: currency-worker
+
+    working_dir: /workspace
+
+    environment:
+      NODE_ENV: development
+
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+
+      AWESOME_API_KEY: ${AWESOME_API_KEY}
+      AWESOME_API_URL: ${AWESOME_API_URL:-https://economia.awesomeapi.com.br}
+      QUOTE_POLL_INTERVAL_MS: ${QUOTE_POLL_INTERVAL_MS:-5000}
+
+      TSC_WATCHFILE: DynamicPriorityPolling
+      TSC_WATCHDIRECTORY: RecursiveDirectoryUsingDynamicPriorityPolling
+
+    volumes:
+      - ./apps/worker/src:/workspace/apps/worker/src
+
+    depends_on:
+      redis:
+        condition: service_healthy
+
+    command: pnpm --filter worker start:dev
+
+    networks:
+      - currency-network
+  # =========================================================
+  # FRONTEND - REACT + VITE
+  # =========================================================
+  web:
+    build:
+      context: .
+      dockerfile: docker/node/Dockerfile.runtime.dev
+
+    container_name: currency-web
+
+    working_dir: /workspace
+
+    environment:
+      VITE_API_URL: http://localhost:3000
+      VITE_WS_URL: http://localhost:3000
+
+    ports:
+      - "5173:5173"
+
+    volumes:
+      - ./apps/web/src:/workspace/apps/web/src
+
+    depends_on:
+      - api
+
+    command: pnpm --filter web dev
+
+    networks:
+      - currency-network
+
+  # =========================================================
+  # TOOLING
+  #
+  # Usado apenas para comandos de desenvolvimento.
+  #
+  # Ex:
+  # docker compose run --rm tooling pnpm install
+  # docker compose run --rm tooling pnpm add -Dw turbo
+  # =========================================================
+  tooling:
+    build:
+      context: .
+      dockerfile: docker/node/Dockerfile.dev
+
+    container_name: currency-tooling
+
+    working_dir: /workspace
+
+    volumes:
+      - .:/workspace
+      - pnpm_store:/pnpm/store
+
+    stdin_open: true
+    tty: true
+
+    profiles:
+      - tools
+
+    networks:
+      - currency-network
+
+
+# =========================================================
+# VOLUMES
+# =========================================================
+volumes:
+  postgres_data:
+  redis_data:
+  pnpm_store:
+
+
+# =========================================================
+# NETWORK
+# =========================================================
+networks:
+  currency-network:
+    driver: bridge
