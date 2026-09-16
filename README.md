@@ -63,6 +63,8 @@ flowchart LR
     api -->|"Socket.IO · /quotes · quotes:updated"| web
 ```
 
+> **Pub/Sub com Redis:** o worker publica cada coleta no canal `quotes.updated`. As instâncias da API assinam esse canal e retransmitem o evento `quotes:updated` aos navegadores via Socket.IO. Assim, uma única coleta atende todas as instâncias da API e todos os clientes conectados.
+
 O worker é o único componente que consulta o provedor externo. Ele grava o estado e publica uma mensagem no Redis. Cada instância da API pode então retransmitir a mesma atualização via Socket.IO, sem multiplicar chamadas à AwesomeAPI — uma base adequada para escalar a API horizontalmente.
 
 API e worker seguem Clean Architecture: o domínio e os casos de uso dependem de portas; Redis, Prisma, JWT, scrypt e AwesomeAPI são adaptadores de infraestrutura. Isso mantém as regras de negócio independentes das tecnologias usadas.
